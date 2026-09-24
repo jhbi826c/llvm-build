@@ -8,6 +8,7 @@ permissions:
 
 env:
   LLVM_VERSION: "23.1.2"
+  MOLD_VERSION: "2.41.0"
   RELEASE_TAG: llvm-mlir-py312-release-shared
   GH_REPO: ${{ github.repository }}
 
@@ -60,9 +61,40 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build clang lld mold git \
+            cmake ninja-build clang lld git \
             ca-certificates xz-utils zstd curl \
             python3-dev
+
+      - name: Install upstream mold ${{ env.MOLD_VERSION }}
+        run: |
+          case "${{ matrix.arch }}" in
+            amd64)
+              MOLD_ARCH=x86_64
+              MOLD_SHA256=a3696680d99e692970590a178bc3a33d78d60d1c6dc9db7a11b557b02b751f5d
+              ;;
+            arm64)
+              MOLD_ARCH=aarch64
+              MOLD_SHA256=946de2774b06a71346bd59b55fddba610b65b8d93c3a4a1559cc84e103472710
+              ;;
+            *)
+              echo "Unsupported architecture: ${{ matrix.arch }}"
+              exit 1
+              ;;
+          esac
+
+          MOLD_TARBALL="mold-${MOLD_VERSION}-${MOLD_ARCH}-linux.tar.gz"
+          curl --fail --location --retry 3 \
+            "https://github.com/rui314/mold/releases/download/v${MOLD_VERSION}/${MOLD_TARBALL}" \
+            --output "/tmp/${MOLD_TARBALL}"
+          echo "${MOLD_SHA256}  /tmp/${MOLD_TARBALL}" | sha256sum --check -
+
+          sudo mkdir -p /usr/local/mold
+          sudo tar -xzf "/tmp/${MOLD_TARBALL}" \
+            --strip-components=1 \
+            -C /usr/local/mold
+          sudo install -m 0755 /usr/local/mold/bin/mold /usr/local/bin/mold
+          sudo install -m 0755 /usr/local/mold/bin/ld.mold /usr/local/bin/ld.mold
+          mold --version
 
       - name: Use Python 3.12
         uses: actions/setup-python@v7
