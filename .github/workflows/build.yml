@@ -28,14 +28,31 @@ jobs:
 
   build-llvm:
     needs: prepare-release
+    name: Build ${{ matrix.asset_suffix }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: amd64
             runner: ubuntu-24.04
+            projects: mlir
+            cir: OFF
+            asset_suffix: amd64
           - arch: arm64
             runner: ubuntu-24.04-arm
+            projects: mlir
+            cir: OFF
+            asset_suffix: arm64
+          - arch: amd64
+            runner: ubuntu-24.04
+            projects: "clang;mlir"
+            cir: ON
+            asset_suffix: amd64-cir
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            projects: "clang;mlir"
+            cir: ON
+            asset_suffix: arm64-cir
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 240
     steps:
@@ -80,7 +97,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_STANDARD=17 \
             -DLLVM_TARGETS_TO_BUILD="host" \
-            -DLLVM_ENABLE_PROJECTS="mlir" \
+            -DLLVM_ENABLE_PROJECTS="${{ matrix.projects }}" \
+            -DCLANG_ENABLE_CIR=${{ matrix.cir }} \
             -DLLVM_USE_LINKER=mold \
             -DBUILD_SHARED_LIBS=1 \
             -DLLVM_INSTALL_UTILS=ON \
@@ -104,15 +122,15 @@ jobs:
         run: |
           cd /opt
           tar --use-compress-program='zstd -T0 -15' \
-            -cf "/tmp/llvm-23.1.2-${{ matrix.arch }}.tar.zst" llvm-23
-          ls -lh "/tmp/llvm-23.1.2-${{ matrix.arch }}.tar.zst"
+            -cf "/tmp/llvm-23.1.2-${{ matrix.asset_suffix }}.tar.zst" llvm-23
+          ls -lh "/tmp/llvm-23.1.2-${{ matrix.asset_suffix }}.tar.zst"
 
       - name: Upload to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload "$RELEASE_TAG" \
-            "/tmp/llvm-23.1.2-${{ matrix.arch }}.tar.zst" \
+            "/tmp/llvm-23.1.2-${{ matrix.asset_suffix }}.tar.zst" \
             --clobber
 
   publish-release:
