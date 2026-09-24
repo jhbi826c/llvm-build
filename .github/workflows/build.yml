@@ -1,0 +1,125 @@
+name: Build LLVM
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  LLVM_VERSION: "23.1.2"
+  RELEASE_TAG: llvm-mlir-py312-release-shared
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Prepare GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
+            gh release create "$RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --draft \
+              --title "LLVM/MLIR ${LLVM_VERSION} Python 3.12 shared build" \
+              --notes "LLVM/MLIR ${LLVM_VERSION} build trees for amd64 and arm64."
+
+  build-llvm:
+    needs: prepare-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    steps:
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build clang lld mold git \
+            ca-certificates xz-utils zstd curl \
+            python3-dev
+
+      - name: Use Python 3.12
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install MLIR build-time Python deps
+        run: |
+          pip install \
+            'nanobind>=2.9,<3.0' \
+            'pybind11>=2.10' \
+            'PyYAML>=5.4.0,<=6.0.1' \
+            'typing_extensions>=4.12.2' \
+            'numpy>=2.1.0,<=2.1.2' \
+            'ml_dtypes>=0.5.0,<=0.6.0'
+
+      - name: Clone LLVM 23.1.2
+        run: |
+          sudo mkdir -p /opt/llvm-23
+          sudo chown "$USER:$USER" /opt/llvm-23
+          git clone --depth 1 --branch llvmorg-23.1.2 \
+            https://github.com/llvm/llvm-project.git /opt/llvm-23/src
+
+      - name: Configure LLVM
+        working-directory: /opt/llvm-23/src
+        run: |
+          PYBIND11_DIR=$(python3 -m pybind11 --cmakedir)
+          NANOBIND_DIR=$(python3 -c "import nanobind; print(nanobind.cmake_dir())")
+          cmake -S llvm -B /opt/llvm-23/build -G Ninja \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=17 \
+            -DLLVM_TARGETS_TO_BUILD="host" \
+            -DLLVM_ENABLE_PROJECTS="mlir" \
+            -DLLVM_USE_LINKER=mold \
+            -DBUILD_SHARED_LIBS=1 \
+            -DLLVM_INSTALL_UTILS=ON \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
+            -DMLIR_ENABLE_EXECUTION_ENGINE=ON \
+            -DLLVM_BUILD_TOOLS=ON \
+            -DMLIR_BUILD_MLIR_C_DYLIB=ON \
+            -DLLVM_OPTIMIZED_TABLEGEN=ON \
+            -DLLVM_PARALLEL_LINK_JOBS=2 \
+            -Dpybind11_DIR="$PYBIND11_DIR" \
+            -Dnanobind_DIR="$NANOBIND_DIR" \
+            -DPython3_EXECUTABLE=$(which python3) \
+            -DPython_EXECUTABLE=$(which python3)
+
+      - name: Build LLVM
+        run: cmake --build /opt/llvm-23/build
+
+      - name: Package build tree
+        run: |
+          cd /opt
+          tar --use-compress-program='zstd -T0 -15' \
+            -cf "/tmp/llvm-23.1.2-${{ matrix.arch }}.tar.zst" llvm-23
+          ls -lh "/tmp/llvm-23.1.2-${{ matrix.arch }}.tar.zst"
+
+      - name: Upload to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$RELEASE_TAG" \
+            "/tmp/llvm-23.1.2-${{ matrix.arch }}.tar.zst" \
+            --clobber
+
+  publish-release:
+    needs: build-llvm
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --latest
